@@ -91,7 +91,7 @@ class ProjectAgent:
 
         # Parameters
         
-        self.ckpt_path = 'test_final/ckpt.pt'
+        self.ckpt_path = 'src/test_final/ckpt.pt'
         self.batch_size = 2048
         self.grad_clip = 1000.0
         self.target_update = 1000
