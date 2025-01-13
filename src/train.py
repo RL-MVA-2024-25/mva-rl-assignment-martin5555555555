@@ -184,7 +184,7 @@ class ProjectAgent:
         torch.save(ckpt, path)
 
     def load(self):
-        ckpt = torch.load(self.ckpt_path)
+        ckpt = torch.load(self.ckpt_path, map_location_device='cpu')
         self.dqn.load_state_dict(ckpt["dqn"])
         self.dqn_target.load_state_dict(ckpt["dqn_target"])
         self.optimizer.load_state_dict(ckpt["optim"])
