@@ -26,49 +26,116 @@ import torch.optim as optim
 import torch
 import torch.nn as nn
 
+#@title Network
 
-class Network(nn.Module):
-    def __init__(self, in_dim: int, nf: int, out_dim: int):
-        """Initialization."""
-        super(Network, self).__init__()
+import torch
+import torch.nn as nn
 
+
+import torch
+import torch.nn as nn
+import math
+
+class NoisyLinear(nn.Module):
+    def __init__(self, in_features, out_features, std_init=0.5, factorized=True):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.factorized = factorized
+        self.std_init = std_init
+        
+        # Learnable parameters (μ)
+        self.weight_mu = nn.Parameter(torch.empty(out_features, in_features))
+        self.bias_mu = nn.Parameter(torch.empty(out_features))
+        # Noise scaling parameters (σ)
+        self.weight_sigma = nn.Parameter(torch.empty(out_features, in_features))
+        self.bias_sigma = nn.Parameter(torch.empty(out_features))
+        
+        # Factorized noise parameters
+        if factorized:
+            self.register_buffer('weight_epsilon_input', torch.empty(in_features))
+            self.register_buffer('weight_epsilon_output', torch.empty(out_features))
+            self.register_buffer('bias_epsilon', torch.empty(out_features))
+        else:
+            self.register_buffer('weight_epsilon', torch.empty(out_features, in_features))
+            self.register_buffer('bias_epsilon', torch.empty(out_features))
+            
+        self.reset_parameters()
+        self.reset_noise()
+        
+    def reset_parameters(self):
+        # Initialize μ using Glorot initialization
+        std = math.sqrt(3 / self.in_features)
+        self.weight_mu.data.uniform_(-std, std)
+        self.bias_mu.data.uniform_(-std, std)
+        
+        # Initialize σ
+        self.weight_sigma.data.fill_(self.std_init / math.sqrt(self.in_features))
+        self.bias_sigma.data.fill_(self.std_init / math.sqrt(self.out_features))
+        
+    def _scale_noise(self, size):
+        x = torch.randn(size, device=self.weight_mu.device)
+        return x.sign().mul(x.abs().sqrt())
+        
+    def reset_noise(self):
+        if self.factorized:
+            epsilon_input = self._scale_noise(self.in_features)
+            epsilon_output = self._scale_noise(self.out_features)
+            self.weight_epsilon_input.copy_(epsilon_input)
+            self.weight_epsilon_output.copy_(epsilon_output)
+            self.bias_epsilon.copy_(self._scale_noise(self.out_features))
+        else:
+            self.weight_epsilon.copy_(torch.randn(self.out_features, self.in_features))
+            self.bias_epsilon.copy_(torch.randn(self.out_features))
+            
+    def forward(self, x):
+        if self.training:
+            if self.factorized:
+                # Factorized Gaussian noise
+                weight = self.weight_mu + self.weight_sigma * torch.ger(
+                    self.weight_epsilon_output, self.weight_epsilon_input)
+            else:
+                # Independent Gaussian noise
+                weight = self.weight_mu + self.weight_sigma * self.weight_epsilon
+                
+            bias = self.bias_mu + self.bias_sigma * self.bias_epsilon
+            return F.linear(x, weight, bias)
+        else:
+            return F.linear(x, self.weight_mu, self.bias_mu)
+
+class NoisyHIVTreatmentDQN(nn.Module):
+    def __init__(self, in_dim, nf, out_dim):
+        super(NoisyHIVTreatmentDQN, self).__init__()
+        
         self.layers = nn.Sequential(
-            nn.Linear(in_dim, nf),
-            nn.LeakyReLU(),
-            nn.Linear(nf, nf),
-            nn.LeakyReLU(),
-            nn.Linear(nf, nf),
-            nn.LeakyReLU(),
-            nn.Linear(nf, out_dim)
+            nn.Linear(in_dim, nf),  # First layer remains standard
+            nn.ReLU(),
+            NoisyLinear(nf, nf, std_init=0.5),  # Replace standard linear layers with noisy ones
+            nn.ReLU(),
+            NoisyLinear(nf, out_dim, std_init=0.5)
         )
-
-        self.init_weights()
-
-    def init_weights(self):
-        for m in self.modules():
+        
+        # Initialize non-noisy layers
+        for m in self.layers:
             if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight.data)
-                nn.init.zeros_(m.bias.data)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward method implementation."""
-    
+                nn.init.xavier_uniform_(m.weight)
+                nn.init.zeros_(m.bias)
+                
+    def forward(self, x):
         epsilons = torch.zeros(x.shape)+1e-16
         x = torch.log10(x + epsilons.to(x.device))
+        if not isinstance(x, torch.FloatTensor) and not isinstance(x, torch.cuda.FloatTensor):
+            x = torch.FloatTensor(x)
         return self.layers(x)
+        
+    def reset_noise(self):
+        """Reset noise for all noisy layers"""
+        for module in self.modules():
+            if isinstance(module, NoisyLinear):
+                module.reset_noise()
 
-class DuelingNetwork(nn.Module):
-    def __init__(self, in_dim: int, nf: int, out_dim: int):
-        """Initialization."""
-        super(DuelingNetwork, self).__init__()
-        self.value_net = Network(in_dim, nf, 1)
-        self.adv_net = Network(in_dim, nf, out_dim)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward method implementation."""
-        value = self.value_net(x)
-        adv = self.adv_net(x)
-        return value + adv - adv.mean(dim=-1, keepdim=True)
+
 class ProjectAgent:
     def __init__(
         self
@@ -149,8 +216,8 @@ class ProjectAgent:
         )
         # self.dqn = Network(**dqn_config).to(self.device)
         # self.dqn_target = Network(**dqn_config).to(self.device)
-        self.dqn = DuelingNetwork(**dqn_config).to(self.device)
-        self.dqn_target = DuelingNetwork(**dqn_config).to(self.device)
+        self.dqn = NoisyHIVTreatmentDQN(**dqn_config).to(self.device)
+        self.dqn_target = NoisyHIVTreatmentDQN(**dqn_config).to(self.device)
         self.dqn_target.load_state_dict(self.dqn.state_dict())
         self.dqn_target.eval()
 
