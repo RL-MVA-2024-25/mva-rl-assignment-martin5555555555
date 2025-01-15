@@ -253,8 +253,8 @@ class ProjectAgent:
     def load(self):
         ckpt = torch.load(self.ckpt_path, map_location='cpu')
         self.dqn.load_state_dict(ckpt["dqn"])
-        self.dqn_target.load_state_dict(ckpt["dqn_target"])
-        self.optimizer.load_state_dict(ckpt["optim"])
+        #self.dqn_target.load_state_dict(ckpt["dqn_target"])
+        #self.optimizer.load_state_dict(ckpt["optim"])
         """
         for key, value in ckpt["memory"].items():
             if key not in ["sum_tree", "min_tree"]:
